@@ -1,7 +1,11 @@
+import json
+import sqlite3
+
 import pytest
 from fastapi import HTTPException
 
 from app.modules.skirting import skirting_usage
+from app.repositories import history, settings_repo
 from app.services import estimate_service
 
 
@@ -103,3 +107,63 @@ def test_saved_payload_keeps_write_time_strip_len(fake_repos, monkeypatch):
     assert second["skirting"]["strips"] == 1
     assert first["skirting"]["strip_len"] == 2.5
     assert first["skirting"]["strips"] == 2
+
+
+@pytest.fixture
+def runs_db(tmp_path, monkeypatch):
+    db = tmp_path / "runs.db"
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE calc_runs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id INTEGER,
+            tile_id INTEGER,
+            waste_pct REAL,
+            result_json TEXT NOT NULL,
+            note TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE rooms(id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE tiles(id INTEGER PRIMARY KEY, name TEXT);
+        INSERT INTO rooms(id, name) VALUES (1, '客餐厅');
+        INSERT INTO tiles(id, name) VALUES (1, '600x600');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    def _connect():
+        c = sqlite3.connect(db)
+        c.row_factory = sqlite3.Row
+        c.execute("PRAGMA foreign_keys = ON")
+        return c
+
+    monkeypatch.setattr(history, "connect", _connect)
+    return db
+
+
+def test_get_run_keeps_write_time_meters_and_strips(runs_db, monkeypatch):
+    # saved under strip width 2.5: 4.5 延米 -> 2 根
+    payload = {"skirting": skirting_usage(6.0, 4.5, "width", 2.5)}
+    run_id = history.insert_run(1, 1, 8.0, payload, "")
+
+    # the live default strip width legally changes before the run is reopened
+    monkeypatch.setattr(settings_repo, "get_skirting_strip_len", lambda: 5.0)
+
+    sk = history.get_run(run_id)["result"]["skirting"]
+    assert sk["linear_m"] == 4.5
+    assert sk["strip_len"] == 2.5
+    assert sk["strips"] == 2
+
+
+def test_get_run_matches_list_and_write_payload(runs_db, monkeypatch):
+    written = skirting_usage(6.0, 4.5, "length", 2.5)
+    run_id = history.insert_run(1, 1, 8.0, {"skirting": written}, "")
+    monkeypatch.setattr(settings_repo, "get_skirting_strip_len", lambda: 1.0)
+
+    opened = history.get_run(run_id)["result"]["skirting"]
+    listed = next(r for r in history.list_runs() if r["id"] == run_id)["result"]["skirting"]
+    assert opened == written
+    assert listed == written

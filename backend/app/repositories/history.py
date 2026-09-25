@@ -74,10 +74,11 @@ def get_run(run_id: int):
         ).fetchone()
         if not row:
             return None
-        from app.services.strip_open import recount_strips
-
         d = dict(row)
-        d["result"] = recount_strips(json.loads(d.pop("result_json")))
+        # Return the write-time snapshot verbatim: linear_m, strip_len and strips
+        # belong to one strip width and must not be recomputed against the live
+        # default when a saved run is reopened.
+        d["result"] = json.loads(d.pop("result_json"))
         return d
     finally:
         conn.close()
