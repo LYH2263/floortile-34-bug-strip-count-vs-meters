@@ -22,8 +22,3 @@ def skirting_usage(room_l: float, room_w: float, edge: str, strip_len: float) ->
         "strip_len": strip_len,
         "strips": ceil_units(linear_m / strip_len),
     }
-
-
-def strips_for_meters(linear_m: float, strip_len: float) -> int:
-    """Recount strips from pinned meters and a strip length."""
-    return ceil_units(float(linear_m) / float(strip_len))

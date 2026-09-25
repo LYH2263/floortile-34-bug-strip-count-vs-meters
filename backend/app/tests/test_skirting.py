@@ -1,7 +1,11 @@
+import json
+import sqlite3
+
 import pytest
 from fastapi import HTTPException
 
 from app.modules.skirting import skirting_usage
+from app.repositories import history as history_repo
 from app.services import estimate_service
 
 
@@ -103,3 +107,42 @@ def test_saved_payload_keeps_write_time_strip_len(fake_repos, monkeypatch):
     assert second["skirting"]["strips"] == 1
     assert first["skirting"]["strip_len"] == 2.5
     assert first["skirting"]["strips"] == 2
+
+
+@pytest.fixture
+def isolated_db(tmp_path, monkeypatch):
+    from app import db as db_mod
+    from app.seed import init_db
+
+    db_file = tmp_path / "test.db"
+    monkeypatch.setattr(db_mod, "DB_PATH", db_file)
+    init_db()
+    return db_file
+
+
+def test_get_run_keeps_write_time_skirting_set(isolated_db):
+    # written with the 2.5 m default: 4.5 延米 -> 2 strips
+    saved = {
+        "order_count": 81,
+        "skirting": {"edge": "width", "linear_m": 4.5, "strip_len": 2.5, "strips": 2},
+    }
+    conn = sqlite3.connect(isolated_db)
+    cur = conn.execute(
+        "INSERT INTO calc_runs(room_id, tile_id, waste_pct, result_json, note, created_at)"
+        " VALUES (1,1,8,?,'','2026-09-25T00:00:00+00:00')",
+        (json.dumps(saved, ensure_ascii=False),),
+    )
+    run_id = int(cur.lastrowid)
+    conn.commit()
+    conn.close()
+
+    from app.repositories import settings_repo
+
+    # live default changes to another legal value before the run is reopened
+    settings_repo.set_value("skirting_strip_len", "1.3")  # would recount to 4 strips
+
+    row = history_repo.get_run(run_id)
+    sk = row["result"]["skirting"]
+    assert sk["linear_m"] == 4.5
+    assert sk["strip_len"] == 2.5
+    assert sk["strips"] == 2
